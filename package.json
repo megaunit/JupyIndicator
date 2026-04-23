@@ -1,0 +1,106 @@
+{
+  "name": "jupyindicator",
+  "displayName": "JupyIndicator",
+  "description": "Live git change indicators (added / modified / deleted, staged vs unstaged) inside Jupyter notebook cells.",
+  "version": "0.1.0",
+  "publisher": "ahmed-alnasser",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ahmed-alnasser/jupyindicator"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "jupyter",
+    "notebook",
+    "ipynb",
+    "git",
+    "diff",
+    "gutter"
+  ],
+  "activationEvents": [
+    "onNotebook:jupyter-notebook"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "JupyIndicator",
+      "properties": {
+        "jupyindicator.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable live git change indicators inside Jupyter notebook cells."
+        },
+        "jupyindicator.debounceMs": {
+          "type": "number",
+          "default": 150,
+          "minimum": 0,
+          "maximum": 2000,
+          "description": "Milliseconds to debounce recomputation after a cell edit."
+        },
+        "jupyindicator.colors.unstagedAdded": {
+          "type": "string",
+          "default": "#2ea043",
+          "description": "Color for unstaged additions."
+        },
+        "jupyindicator.colors.unstagedModified": {
+          "type": "string",
+          "default": "#1f6feb",
+          "description": "Color for unstaged modifications."
+        },
+        "jupyindicator.colors.unstagedDeleted": {
+          "type": "string",
+          "default": "#f85149",
+          "description": "Color for unstaged deletion markers."
+        },
+        "jupyindicator.colors.stagedAdded": {
+          "type": "string",
+          "default": "#0f5323",
+          "description": "Color for staged additions."
+        },
+        "jupyindicator.colors.stagedModified": {
+          "type": "string",
+          "default": "#0c3d8a",
+          "description": "Color for staged modifications."
+        },
+        "jupyindicator.colors.stagedDeleted": {
+          "type": "string",
+          "default": "#8b1a1a",
+          "description": "Color for staged deletion markers."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "jupyindicator.refresh",
+        "title": "JupyIndicator: Refresh Indicators"
+      },
+      {
+        "command": "jupyindicator.toggle",
+        "title": "JupyIndicator: Toggle On/Off"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "diff": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
