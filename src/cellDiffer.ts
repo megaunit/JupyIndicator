@@ -29,8 +29,10 @@ export function diffCellSources(oldSrc: string, newSrc: string): RawLineChange[]
     if (c.added) {
       // A lone `added` — any `added` that was paired with a preceding
       // `removed` is consumed inside the removed branch below.
-      for (let j = 0; j < c.count; j++) {
-        result.push({ line: newLine + j, type: 'added' });
+      const addedLines = lineTokens(c.value);
+      const startLine = anchorAddedLines(newSrc, newLine, addedLines);
+      for (let j = 0; j < addedLines.length; j++) {
+        result.push({ line: startLine + j, type: 'added' });
       }
       newLine += c.count;
       continue;
@@ -40,6 +42,18 @@ export function diffCellSources(oldSrc: string, newSrc: string): RawLineChange[]
       if (next && next.added) {
         const rm = c.count;
         const ad = next.count;
+        const removedLines = lineTokens(c.value);
+        const addedLines = lineTokens(next.value);
+        const splitLines = splitLineAddedLines(removedLines, addedLines);
+        if (splitLines) {
+          for (const line of splitLines) {
+            result.push({ line: newLine + line, type: 'added' });
+          }
+          newLine += ad;
+          i++; // consumed the paired added hunk
+          continue;
+        }
+
         const modCount = Math.min(rm, ad);
         for (let j = 0; j < modCount; j++) {
           result.push({ line: newLine + j, type: 'modified' });
@@ -84,4 +98,50 @@ export function allLinesAdded(source: string): RawLineChange[] {
   const changes: RawLineChange[] = [];
   for (let i = 0; i < count; i++) changes.push({ line: i, type: 'added' });
   return changes;
+}
+
+function lineTokens(source: string): string[] {
+  if (source.length === 0) return [];
+  const lines = source.split('\n');
+  if (source.endsWith('\n')) lines.pop();
+  return lines;
+}
+
+function anchorAddedLines(newSrc: string, hunkStartLine: number, addedLines: string[]): number {
+  if (addedLines.length === 0 || !allSame(addedLines)) return hunkStartLine;
+
+  const newLines = lineTokens(newSrc);
+  const inserted = addedLines[0];
+  let line = hunkStartLine;
+  while (line > 0 && newLines[line - 1] === inserted) {
+    line--;
+  }
+  return line;
+}
+
+function allSame(lines: string[]): boolean {
+  return lines.every((line) => line === lines[0]);
+}
+
+function splitLineAddedLines(
+  removedLines: string[],
+  addedLines: string[],
+): number[] | null {
+  if (removedLines.length !== 1 || addedLines.length < 2) return null;
+  if (addedLines.join('') !== removedLines[0]) return null;
+
+  const oldLine = removedLines[0];
+  if (addedLines[0] === oldLine) {
+    return lineIndexRange(1, addedLines.length);
+  }
+  if (addedLines[addedLines.length - 1] === oldLine) {
+    return lineIndexRange(0, addedLines.length - 1);
+  }
+  return lineIndexRange(0, addedLines.length);
+}
+
+function lineIndexRange(start: number, end: number): number[] {
+  const out: number[] = [];
+  for (let i = start; i < end; i++) out.push(i);
+  return out;
 }

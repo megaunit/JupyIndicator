@@ -78,4 +78,34 @@ describe('notebookDiffer.computeNotebookChanges', () => {
     expect(changes.get('a')).toEqual([{ line: 0, type: 'modified' }]);
     expect(changes.get('b')).toEqual([{ line: 0, type: 'deleted' }]);
   });
+
+  it('marks only the inserted blank line when pressing Enter at the end of a line', () => {
+    const base = notebook([cell(0, 'a', 'a\nb\nc')]);
+    const current = notebook([cell(0, 'a', 'a\nb\n\nc')]);
+
+    const changes = computeNotebookChanges(base, current);
+
+    expect(changes.get('a')).toEqual([{ line: 2, type: 'added' }]);
+  });
+
+  it('marks both resulting lines as added when pressing Enter in the middle of a line', () => {
+    const base = notebook([cell(0, 'a', 'const value = computeThing();')]);
+    const current = notebook([cell(0, 'a', 'const value =\n computeThing();')]);
+
+    const changes = computeNotebookChanges(base, current);
+
+    expect(changes.get('a')).toEqual([
+      { line: 0, type: 'added' },
+      { line: 1, type: 'added' },
+    ]);
+  });
+
+  it('anchors an inserted blank line at the start of an ambiguous empty-line run', () => {
+    const base = notebook([cell(0, 'a', 'a\n\n\nb')]);
+    const current = notebook([cell(0, 'a', 'a\n\n\n\nb')]);
+
+    const changes = computeNotebookChanges(base, current);
+
+    expect(changes.get('a')).toEqual([{ line: 1, type: 'added' }]);
+  });
 });
