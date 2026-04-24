@@ -2,9 +2,9 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { parseNotebook } from './notebookParser';
-import { matchCells } from './cellMatcher';
-import { diffCellSources, allLinesAdded, RawLineChange } from './cellDiffer';
-import { getGitVersions, gitStateFiles } from './gitProvider';
+import { RawLineChange } from './cellDiffer';
+import { getGitVersions } from './gitProvider';
+import { computeNotebookChanges } from './notebookDiffer';
 import {
   DecorationSet,
   applyCellDecorations,
@@ -17,6 +17,7 @@ import {
   CellType,
   ParsedCell,
   ParsedNotebook,
+  GitWatchPaths,
 } from './types';
 
 interface GitCache {
@@ -31,13 +32,14 @@ interface NotebookState {
   changes: Map<string, CellLineChange[]>;
   timer: NodeJS.Timeout | null;
   git: GitCache | null;
+  generation: number;
 }
 
 interface GitWatch {
-  refCount: number;
   disposables: vscode.Disposable[];
   /** Notebook URI strings registered against this repo. */
   notebooks: Set<string>;
+  signature: string;
 }
 
 const decorations = new DecorationSet();
@@ -70,6 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (ed && isTargetNotebook(ed.notebook)) scheduleRecompute(ed.notebook, 0);
     }),
     vscode.window.onDidChangeVisibleTextEditors((editors) => {
+      if (!enabled) return;
       // A cell editor that just became visible needs its decorations applied
       // from the cached diff.
       for (const e of editors) {
@@ -80,12 +83,21 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((ev) => {
       if (ev.affectsConfiguration('jupyindicator.colors')) {
         readConfigAndRebuildDecorations();
-        reapplyAll();
+        if (enabled) reapplyAll();
+        else clearAll();
       }
       if (ev.affectsConfiguration('jupyindicator.enabled')) {
         enabled = getConfig().get<boolean>('enabled', true);
-        if (!enabled) clearAll();
-        else reapplyAll();
+        if (!enabled) {
+          cancelAllTimers();
+          clearAll();
+        } else {
+          for (const nb of vscode.workspace.notebookDocuments) {
+            if (!isTargetNotebook(nb)) continue;
+            invalidateGit(nb);
+            scheduleRecompute(nb, 0);
+          }
+        }
       }
     }),
     vscode.commands.registerCommand('jupyindicator.refresh', () => {
@@ -154,7 +166,7 @@ function stateFor(nb: vscode.NotebookDocument): NotebookState {
   const key = nb.uri.toString();
   let s = states.get(key);
   if (!s) {
-    s = { changes: new Map(), timer: null, git: null };
+    s = { changes: new Map(), timer: null, git: null, generation: 0 };
     states.set(key, s);
   }
   return s;
@@ -174,6 +186,16 @@ function invalidateGit(nb: vscode.NotebookDocument): void {
   if (s) s.git = null;
 }
 
+function cancelAllTimers(): void {
+  for (const s of states.values()) {
+    s.generation++;
+    if (s.timer) {
+      clearTimeout(s.timer);
+      s.timer = null;
+    }
+  }
+}
+
 function invalidateGitForRepo(repoRoot: string): void {
   for (const [key, s] of states.entries()) {
     if (s.git?.repoRoot === repoRoot) {
@@ -189,40 +211,44 @@ function invalidateGitForRepo(repoRoot: string): void {
 function scheduleRecompute(nb: vscode.NotebookDocument, delayMs: number): void {
   if (!enabled) return;
   const s = stateFor(nb);
+  const generation = ++s.generation;
   if (s.timer) clearTimeout(s.timer);
   s.timer = setTimeout(() => {
     s.timer = null;
-    recompute(nb).catch((err) => output.appendLine(`recompute error: ${err}`));
+    recompute(nb, generation).catch((err) => output.appendLine(`recompute error: ${err}`));
   }, delayMs);
 }
 
-async function recompute(nb: vscode.NotebookDocument): Promise<void> {
+async function recompute(nb: vscode.NotebookDocument, generation: number): Promise<void> {
   const key = nb.uri.toString();
   const s = stateFor(nb);
+  if (!enabled || generation !== s.generation) return;
 
   const current = fromNotebookDocument(nb);
 
   if (!s.git) {
     const raw = await getGitVersions(nb.uri.fsPath);
+    if (!enabled || generation !== s.generation || !states.has(key)) return;
     s.git = {
       inRepo: raw.inRepo,
       repoRoot: raw.repoRoot,
       head: raw.head !== null ? parseNotebook(raw.head) : null,
       index: raw.index !== null ? parseNotebook(raw.index) : null,
     };
-    if (raw.repoRoot) registerWatcher(raw.repoRoot, key);
+    if (raw.repoRoot && raw.watchPaths) registerWatcher(raw.repoRoot, raw.watchPaths, key);
   }
 
   if (!s.git.inRepo) {
     s.changes.clear();
+    if (!enabled || generation !== s.generation || !states.has(key)) return;
     paintAll(nb, s);
     return;
   }
 
   // Compute total changes (HEAD → current) and unstaged (index → current).
   // A line is "staged" iff it appears in total but not in unstaged.
-  const total = computeChanges(s.git.head, current);
-  const unstaged = computeChanges(s.git.index ?? s.git.head, current);
+  const total = computeNotebookChanges(s.git.head, current);
+  const unstaged = computeNotebookChanges(s.git.index ?? s.git.head, current);
 
   s.changes.clear();
   for (const cur of current.cells) {
@@ -243,35 +269,8 @@ async function recompute(nb: vscode.NotebookDocument): Promise<void> {
     }
     s.changes.set(cur.id, merged);
   }
+  if (!enabled || generation !== s.generation || !states.has(key)) return;
   paintAll(nb, s);
-}
-
-function computeChanges(
-  base: ParsedNotebook | null,
-  current: ParsedNotebook,
-): Map<string, RawLineChange[]> {
-  const out = new Map<string, RawLineChange[]>();
-  if (!base) {
-    for (const cur of current.cells) {
-      out.set(cur.id, allLinesAdded(cur.source));
-    }
-    return out;
-  }
-  const { pairs, addedCurrent } = matchCells(base.cells, current.cells);
-  const pairByCurrent = new Map<number, ParsedCell>();
-  for (const p of pairs) pairByCurrent.set(p.current.index, p.base);
-
-  for (const cur of current.cells) {
-    const base = pairByCurrent.get(cur.index);
-    if (base) {
-      out.set(cur.id, diffCellSources(base.source, cur.source));
-    } else {
-      out.set(cur.id, allLinesAdded(cur.source));
-    }
-  }
-  // addedCurrent are already covered above (no pair → allLinesAdded)
-  void addedCurrent;
-  return out;
 }
 
 function paintAll(nb: vscode.NotebookDocument, s: NotebookState): void {
@@ -366,43 +365,62 @@ function cellNotebookUri(cellUri: vscode.Uri): string | null {
   return vscode.Uri.file(cellUri.fsPath).toString();
 }
 
-function registerWatcher(repoRoot: string, notebookKey: string): void {
+function registerWatcher(repoRoot: string, watchPaths: GitWatchPaths, notebookKey: string): void {
+  const signature = watchSignature(watchPaths);
   let w = gitWatchers.get(repoRoot);
-  if (!w) {
-    const files = gitStateFiles(repoRoot);
-    const gitDirUri = vscode.Uri.file(path.dirname(files.head));
-    const headWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(gitDirUri, 'HEAD'),
-    );
-    const indexWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(gitDirUri, 'index'),
-    );
-    const onChange = () => invalidateGitForRepo(repoRoot);
-    const disposables: vscode.Disposable[] = [
-      headWatcher.onDidChange(onChange),
-      headWatcher.onDidCreate(onChange),
-      headWatcher.onDidDelete(onChange),
-      indexWatcher.onDidChange(onChange),
-      indexWatcher.onDidCreate(onChange),
-      indexWatcher.onDidDelete(onChange),
-      headWatcher,
-      indexWatcher,
-    ];
-    w = { refCount: 0, disposables, notebooks: new Set() };
+  if (w && w.signature !== signature) {
+    const notebooks = w.notebooks;
+    for (const d of w.disposables) d.dispose();
+    w = createGitWatch(repoRoot, watchPaths, signature, notebooks);
+    gitWatchers.set(repoRoot, w);
+  } else if (!w) {
+    w = createGitWatch(repoRoot, watchPaths, signature, new Set());
     gitWatchers.set(repoRoot, w);
   }
-  if (!w.notebooks.has(notebookKey)) {
-    w.notebooks.add(notebookKey);
-    w.refCount++;
-  }
+  w.notebooks.add(notebookKey);
 }
 
 function unregisterFromWatcher(repoRoot: string, notebookKey: string): void {
   const w = gitWatchers.get(repoRoot);
   if (!w) return;
-  if (w.notebooks.delete(notebookKey)) w.refCount--;
-  if (w.refCount <= 0) {
+  w.notebooks.delete(notebookKey);
+  if (w.notebooks.size === 0) {
     for (const d of w.disposables) d.dispose();
     gitWatchers.delete(repoRoot);
   }
+}
+
+function createGitWatch(
+  repoRoot: string,
+  watchPaths: GitWatchPaths,
+  signature: string,
+  notebooks: Set<string>,
+): GitWatch {
+  const onChange = () => invalidateGitForRepo(repoRoot);
+  const disposables: vscode.Disposable[] = [];
+  for (const file of uniqueWatchFiles(watchPaths)) {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(path.dirname(file)), path.basename(file)),
+    );
+    disposables.push(
+      watcher.onDidChange(onChange),
+      watcher.onDidCreate(onChange),
+      watcher.onDidDelete(onChange),
+      watcher,
+    );
+  }
+  return { disposables, notebooks, signature };
+}
+
+function uniqueWatchFiles(watchPaths: GitWatchPaths): string[] {
+  return [...new Set([
+    watchPaths.head,
+    watchPaths.index,
+    watchPaths.ref,
+    watchPaths.packedRefs,
+  ].filter((p): p is string => typeof p === 'string' && p.length > 0))];
+}
+
+function watchSignature(watchPaths: GitWatchPaths): string {
+  return uniqueWatchFiles(watchPaths).sort().join('\n');
 }

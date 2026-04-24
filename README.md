@@ -34,18 +34,13 @@ repository to see indicators.
 5. `decorator.ts` — applies `TextEditorDecorationType`s to the cell editor
    (found via `window.visibleTextEditors` filtered by the
    `vscode-notebook-cell` URI scheme).
-6. `extension.ts` — wires events (notebook changes, saves, visibility, git
-   state via `.git/HEAD` and `.git/index` watchers) with a 150 ms per-notebook
-   debounce.
+6. `extension.ts` — wires events (notebook changes, saves, visibility, and git
+   state watchers for HEAD/index/active refs) with a 150 ms per-notebook debounce.
 
 Staged vs unstaged is computed by diffing **twice**: working tree vs HEAD gives
 the *total* change set, working tree vs index gives the *unstaged* set. The
 difference is staged. Each line's indicator reflects whichever category it
 falls into (unstaged wins on conflicts).
-
-## Screenshot
-
-![screenshot placeholder](./docs/screenshot.png)
 
 ## Settings
 
@@ -95,8 +90,6 @@ integration test that threads a fixture pair end-to-end.
   Very large notebooks may feel sluggish; there's no incremental path yet.
 - **Git-only.** The extension shells out to `git`; it won't do anything for
   notebooks outside a git repository (silent no-op).
-- **No live staged-side markers when the index is externally rewritten
-  between edits** unless the filesystem watcher on `.git/index` fires.
 
 ## License
 

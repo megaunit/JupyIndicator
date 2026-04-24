@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { GitVersions } from './types';
+import { GitVersions, GitWatchPaths } from './types';
 
 interface ExecResult {
   stdout: string;
@@ -10,6 +10,13 @@ interface ExecResult {
 }
 
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
+
+interface GitRepositoryInfo {
+  repoRoot: string;
+  gitDir: string;
+  gitCommonDir: string;
+  headRef: string | null;
+}
 
 function runGit(args: string[], cwd: string): Promise<ExecResult> {
   return new Promise((resolve) => {
@@ -28,12 +35,25 @@ function runGit(args: string[], cwd: string): Promise<ExecResult> {
   });
 }
 
-async function findRepoRoot(startDir: string): Promise<string | null> {
+async function findRepoInfo(startDir: string): Promise<GitRepositoryInfo | null> {
   if (!fs.existsSync(startDir)) return null;
-  const res = await runGit(['rev-parse', '--show-toplevel'], startDir);
-  if (res.code !== 0) return null;
-  const root = res.stdout.trim();
-  return root.length > 0 ? root : null;
+  const [rootRes, gitDirRes, gitCommonDirRes, headRefRes] = await Promise.all([
+    runGit(['rev-parse', '--show-toplevel'], startDir),
+    runGit(['rev-parse', '--git-dir'], startDir),
+    runGit(['rev-parse', '--git-common-dir'], startDir),
+    runGit(['symbolic-ref', '--quiet', 'HEAD'], startDir),
+  ]);
+  if (rootRes.code !== 0 || gitDirRes.code !== 0 || gitCommonDirRes.code !== 0) {
+    return null;
+  }
+  const repoRoot = rootRes.stdout.trim();
+  const gitDir = resolveGitPath(startDir, gitDirRes.stdout.trim());
+  const gitCommonDir = resolveGitPath(startDir, gitCommonDirRes.stdout.trim());
+  const headRef = headRefRes.code === 0 ? headRefRes.stdout.trim() : null;
+  if (repoRoot.length === 0 || gitDir.length === 0 || gitCommonDir.length === 0) {
+    return null;
+  }
+  return { repoRoot, gitDir, gitCommonDir, headRef: headRef || null };
 }
 
 async function gitShow(repoRoot: string, ref: string): Promise<string | null> {
@@ -45,25 +65,62 @@ async function gitShow(repoRoot: string, ref: string): Promise<string | null> {
 /**
  * Read HEAD and index versions of a file. Both may be null:
  *   - head is null when the file was never committed
- *   - index is null when the file is not staged (or identical-to-HEAD with no staged entry)
+ *   - index is null when the file is not present in the index
  */
 export async function getGitVersions(filePath: string): Promise<GitVersions> {
-  const repoRoot = await findRepoRoot(path.dirname(filePath));
-  if (!repoRoot) {
-    return { inRepo: false, head: null, index: null, repoRoot: null };
+  const repo = await findRepoInfo(path.dirname(filePath));
+  if (!repo) {
+    return { inRepo: false, head: null, index: null, repoRoot: null, watchPaths: null };
   }
-  const relPath = path.relative(repoRoot, filePath).split(path.sep).join('/');
+  const relPath = relativeGitPath(repo.repoRoot, filePath);
   const [head, index] = await Promise.all([
-    gitShow(repoRoot, `HEAD:${relPath}`),
-    gitShow(repoRoot, `:${relPath}`),
+    gitShow(repo.repoRoot, `HEAD:${relPath}`),
+    gitShow(repo.repoRoot, `:${relPath}`),
   ]);
-  return { inRepo: true, head, index, repoRoot };
+  return {
+    inRepo: true,
+    head,
+    index,
+    repoRoot: repo.repoRoot,
+    watchPaths: gitStateFiles(repo),
+  };
 }
 
-/** Returns paths to the `.git/HEAD` and `.git/index` files for watching. */
-export function gitStateFiles(repoRoot: string): { head: string; index: string } {
+/** Returns git state files for watching, including worktree and packed-ref layouts. */
+export function gitStateFiles(repo: {
+  gitDir: string;
+  gitCommonDir: string;
+  headRef: string | null;
+}): GitWatchPaths {
   return {
-    head: path.join(repoRoot, '.git', 'HEAD'),
-    index: path.join(repoRoot, '.git', 'index'),
+    head: path.join(repo.gitDir, 'HEAD'),
+    index: path.join(repo.gitDir, 'index'),
+    ref: repo.headRef ? path.join(repo.gitCommonDir, ...repo.headRef.split('/')) : null,
+    packedRefs: path.join(repo.gitCommonDir, 'packed-refs'),
   };
+}
+
+function resolveGitPath(cwd: string, rawPath: string): string {
+  if (rawPath.length === 0) return rawPath;
+  return path.isAbsolute(rawPath) ? rawPath : path.resolve(cwd, rawPath);
+}
+
+function relativeGitPath(repoRoot: string, filePath: string): string {
+  let relPath = path.relative(repoRoot, filePath);
+  if (isOutsideRepo(relPath)) {
+    relPath = path.relative(repoRoot, realpathIfExists(filePath));
+  }
+  return relPath.split(path.sep).join('/');
+}
+
+function isOutsideRepo(relPath: string): boolean {
+  return relPath.startsWith('..') || path.isAbsolute(relPath);
+}
+
+function realpathIfExists(filePath: string): string {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return filePath;
+  }
 }
