@@ -88,15 +88,15 @@ describe('notebookDiffer.computeNotebookChanges', () => {
     expect(changes.get('a')).toEqual([{ line: 2, type: 'added' }]);
   });
 
-  it('marks both resulting lines as added when pressing Enter in the middle of a line', () => {
+  it('marks both resulting lines as modified when pressing Enter in the middle of a line', () => {
     const base = notebook([cell(0, 'a', 'const value = computeThing();')]);
     const current = notebook([cell(0, 'a', 'const value =\n computeThing();')]);
 
     const changes = computeNotebookChanges(base, current);
 
     expect(changes.get('a')).toEqual([
-      { line: 0, type: 'added' },
-      { line: 1, type: 'added' },
+      { line: 0, type: 'modified' },
+      { line: 1, type: 'modified' },
     ]);
   });
 

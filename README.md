@@ -5,7 +5,7 @@ VS Code. Shows **added**, **modified**, and **deleted** lines with distinct
 styling for **staged** vs **unstaged** changes.
 
 VS Code's native SCM gutter does not render inside notebook cell editors.
-JupyIndicator fills that gap: it diffs each cell's *source code* (not the raw
+JupyIndicator fills that gap: it diffs each cell's _source code_ (not the raw
 JSON) against its HEAD and index versions and paints indicators using
 `TextEditor.setDecorations` on the individual cell editors that back each
 notebook cell.
@@ -38,22 +38,22 @@ repository to see indicators.
    state watchers for HEAD/index/active refs) with a 150 ms per-notebook debounce.
 
 Staged vs unstaged is computed by diffing **twice**: working tree vs HEAD gives
-the *total* change set, working tree vs index gives the *unstaged* set. The
+the _total_ change set, working tree vs index gives the _unstaged_ set. The
 difference is staged. Each line's indicator reflects whichever category it
 falls into (unstaged wins on conflicts).
 
 ## Settings
 
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `jupyindicator.enabled` | `true` | Turn indicators on/off globally. |
-| `jupyindicator.debounceMs` | `150` | Per-notebook recompute debounce. |
-| `jupyindicator.colors.unstagedAdded` | `#2ea043` | Unstaged insertion. |
-| `jupyindicator.colors.unstagedModified` | `#1f6feb` | Unstaged modification. |
-| `jupyindicator.colors.unstagedDeleted` | `#f85149` | Unstaged deletion marker. |
-| `jupyindicator.colors.stagedAdded` | `#0f5323` | Staged insertion. |
-| `jupyindicator.colors.stagedModified` | `#0c3d8a` | Staged modification. |
-| `jupyindicator.colors.stagedDeleted` | `#8b1a1a` | Staged deletion marker. |
+| Setting                                 | Default   | Purpose                          |
+| --------------------------------------- | --------- | -------------------------------- |
+| `jupyindicator.enabled`                 | `true`    | Turn indicators on/off globally. |
+| `jupyindicator.debounceMs`              | `150`     | Per-notebook recompute debounce. |
+| `jupyindicator.colors.unstagedAdded`    | `#2ea043` | Unstaged insertion.              |
+| `jupyindicator.colors.unstagedModified` | `#1f6feb` | Unstaged modification.           |
+| `jupyindicator.colors.unstagedDeleted`  | `#f85149` | Unstaged deletion marker.        |
+| `jupyindicator.colors.stagedAdded`      | `#0f5323` | Staged insertion.                |
+| `jupyindicator.colors.stagedModified`   | `#0c3d8a` | Staged modification.             |
+| `jupyindicator.colors.stagedDeleted`    | `#8b1a1a` | Staged deletion marker.          |
 
 Commands:
 

@@ -44,10 +44,10 @@ export function diffCellSources(oldSrc: string, newSrc: string): RawLineChange[]
         const ad = next.count;
         const removedLines = lineTokens(c.value);
         const addedLines = lineTokens(next.value);
-        const splitLines = splitLineAddedLines(removedLines, addedLines);
+        const splitLines = splitLineModifiedLines(removedLines, addedLines);
         if (splitLines) {
           for (const line of splitLines) {
-            result.push({ line: newLine + line, type: 'added' });
+            result.push({ line: newLine + line, type: 'modified' });
           }
           newLine += ad;
           i++; // consumed the paired added hunk
@@ -123,7 +123,7 @@ function allSame(lines: string[]): boolean {
   return lines.every((line) => line === lines[0]);
 }
 
-function splitLineAddedLines(
+function splitLineModifiedLines(
   removedLines: string[],
   addedLines: string[],
 ): number[] | null {
