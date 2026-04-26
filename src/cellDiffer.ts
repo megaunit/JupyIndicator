@@ -385,11 +385,7 @@ function splitLineModifiedLines(
   if (removedLines.length !== 1 || addedLines.length < 2) return null;
 
   const oldLine = removedLines[0];
-  const joinedNewLine = addedLines.join('');
-  if (
-    joinedNewLine !== oldLine &&
-    lineSimilarity(oldLine, joinedNewLine) < EDITED_SPLIT_SIMILARITY_THRESHOLD
-  ) {
+  if (!isLikelySplitLine(oldLine, addedLines)) {
     return null;
   }
 
@@ -402,6 +398,23 @@ function splitLineModifiedLines(
   return lineIndexRange(0, addedLines.length);
 }
 
+function isLikelySplitLine(oldLine: string, addedLines: string[]): boolean {
+  return splitJoinCandidates(addedLines).some(
+    (joinedNewLine) =>
+      joinedNewLine === oldLine ||
+      lineSimilarity(oldLine, joinedNewLine) >= EDITED_SPLIT_SIMILARITY_THRESHOLD,
+  );
+}
+
+function splitJoinCandidates(addedLines: string[]): string[] {
+  const joined = addedLines.join('');
+  const withoutContinuationIndent = addedLines
+    .map((line, index) => (index === 0 ? line : line.replace(/^\s+/, '')))
+    .join('');
+
+  return withoutContinuationIndent === joined ? [joined] : [joined, withoutContinuationIndent];
+}
+
 function countTrailingEnterBlanks(
   removedLines: string[],
   addedLines: string[],
@@ -409,7 +422,7 @@ function countTrailingEnterBlanks(
   let trailingBlanks = 0;
   while (
     trailingBlanks < addedLines.length - 1 &&
-    addedLines[addedLines.length - 1 - trailingBlanks] === ''
+    isBlankLine(addedLines[addedLines.length - 1 - trailingBlanks])
   ) {
     trailingBlanks++;
   }
@@ -418,6 +431,10 @@ function countTrailingEnterBlanks(
     return 0;
   }
   return trailingBlanks;
+}
+
+function isBlankLine(line: string): boolean {
+  return line.trim().length === 0;
 }
 
 function lineSimilarity(a: string, b: string): number {

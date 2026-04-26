@@ -144,6 +144,33 @@ describe('cellDiffer: edit-then-Enter consistency', () => {
     ]);
   });
 
+  it('keeps auto-indented blanks added after typing characters and pressing Enter', () => {
+    const spaces = diffCellSources('    foo\n', '    fooX\n    \n');
+    expect(compact(spaces)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'added', changeId: 0 },
+    ]);
+
+    const tab = diffCellSources('    foo\n', '    fooX\n\t\n');
+    expect(compact(tab)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'added', changeId: 0 },
+    ]);
+  });
+
+  it('keeps indented blank fragments inside a split line modified', () => {
+    const r = diffCellSources(
+      "    'talk.religion.misc',",
+      "    'talk\n    \n    .religion.misc',",
+    );
+
+    expect(compact(r)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'modified', changeId: 0 },
+      { line: 2, type: 'modified', changeId: 0 },
+    ]);
+  });
+
   it('pressing Enter at the end of a no-trailing-newline last line is not a modification', () => {
     const r = diffCellSources('foo', 'foo\n');
     expect(compact(r)).toEqual([
@@ -211,6 +238,47 @@ describe('cellDiffer: edit-then-Enter consistency', () => {
     expect(compact(r)).toEqual([
       { line: 0, type: 'modified', changeId: 0 },
       { line: 1, type: 'modified', changeId: 0 },
+    ]);
+  });
+
+  it('marks heavily split auto-indented notebook category strings as modified', () => {
+    const oldSrc = [
+      'categories = [',
+      "    'alt.atheism',",
+      "    'talk.religion.misc',",
+      "    'comp.graphics',",
+      "    'sci.space',",
+      "    'rec.autos',",
+      ']',
+    ].join('\n');
+    const newSrc = [
+      'categories = [',
+      "    'alt.atheism',",
+      "    'ta",
+      '    l',
+      '    k',
+      '    .',
+      '    reli',
+      '    gion',
+      '    .',
+      '    mis',
+      "    c',",
+      "    'comp.graphics',",
+      "    'sci.space',",
+      "    'rec.autos',",
+      ']',
+    ].join('\n');
+
+    expect(compact(diffCellSources(oldSrc, newSrc))).toEqual([
+      { line: 2, type: 'modified', changeId: 0 },
+      { line: 3, type: 'modified', changeId: 0 },
+      { line: 4, type: 'modified', changeId: 0 },
+      { line: 5, type: 'modified', changeId: 0 },
+      { line: 6, type: 'modified', changeId: 0 },
+      { line: 7, type: 'modified', changeId: 0 },
+      { line: 8, type: 'modified', changeId: 0 },
+      { line: 9, type: 'modified', changeId: 0 },
+      { line: 10, type: 'modified', changeId: 0 },
     ]);
   });
 

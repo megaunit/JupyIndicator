@@ -32,7 +32,12 @@ export class DecorationSet {
 
   private build(key: Key, color: string): vscode.TextEditorDecorationType {
     const isDeleted = key.endsWith('Deleted');
-    const svg = isDeleted ? deleteTriangleSvg(color) : verticalBarSvg(color);
+    const isModified = key.endsWith('Modified');
+    const svg = isDeleted
+      ? deleteTriangleSvg(color)
+      : isModified
+        ? modifiedBarSvg(color)
+        : verticalBarSvg(color);
     const iconUri = vscode.Uri.parse(
       `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`,
     );
@@ -122,6 +127,30 @@ function verticalBarSvg(color: string): string {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="6" height="18" viewBox="0 0 6 18">` +
     `<rect x="1.5" y="0" width="3" height="18" fill="${color}"/>` +
+    `</svg>`
+  );
+}
+
+function modifiedBarSvg(color: string): string {
+  // VS Code's native dirty-diff modified gutter uses a 3px right-leaning stripe tile.
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="6" height="18" viewBox="0 0 6 18">` +
+    `<defs>` +
+    `<linearGradient id="modified-stripe-gradient" x1="0" y1="0" x2="3" y2="3" gradientUnits="userSpaceOnUse">` +
+    `<stop offset="0" stop-color="${color}"/>` +
+    `<stop offset="25%" stop-color="${color}"/>` +
+    `<stop offset="25%" stop-color="${color}" stop-opacity="0"/>` +
+    `<stop offset="50%" stop-color="${color}" stop-opacity="0"/>` +
+    `<stop offset="50%" stop-color="${color}"/>` +
+    `<stop offset="75%" stop-color="${color}"/>` +
+    `<stop offset="75%" stop-color="${color}" stop-opacity="0"/>` +
+    `<stop offset="100%" stop-color="${color}" stop-opacity="0"/>` +
+    `</linearGradient>` +
+    `<pattern id="modified-stripes" x="1.5" y="0" width="3" height="3" patternUnits="userSpaceOnUse">` +
+    `<rect x="0" y="0" width="3" height="3" fill="url(#modified-stripe-gradient)"/>` +
+    `</pattern>` +
+    `</defs>` +
+    `<rect x="1.5" y="0" width="3" height="18" fill="url(#modified-stripes)"/>` +
     `</svg>`
   );
 }
