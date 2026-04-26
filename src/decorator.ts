@@ -38,7 +38,12 @@ export class DecorationSet {
     );
     return vscode.window.createTextEditorDecorationType({
       gutterIconPath: iconUri,
-      gutterIconSize: 'contain',
+      // 'auto 100%' forces the icon's rendered height to equal the line
+      // height while preserving the SVG's intrinsic width ratio. With
+      // 'contain', the icon would be aspect-fit inside the gutter cell and
+      // could come out shorter than the line — that gap is what makes
+      // adjacent changed-line indicators look broken instead of merged.
+      gutterIconSize: 'auto 100%',
       overviewRulerColor: color,
       overviewRulerLane: vscode.OverviewRulerLane.Left,
     });
