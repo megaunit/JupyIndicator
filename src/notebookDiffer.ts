@@ -1,4 +1,10 @@
-import { RawLineChange, allLinesAdded, diffCellSources } from './cellDiffer';
+import {
+  RawLineChange,
+  allLinesAdded,
+  diffCellSources,
+  makeRawLineChange,
+  normalizeChangeGroups,
+} from './cellDiffer';
 import { CellPair, matchCells } from './cellMatcher';
 import { ParsedCell, ParsedNotebook } from './types';
 
@@ -30,7 +36,20 @@ export function computeNotebookChanges(
   for (const deleted of deletedBase) {
     const anchor = findDeletedCellAnchor(deleted, pairs, current.cells);
     if (!anchor) continue;
-    pushUnique(out, anchor.cell.id, { line: anchor.line, type: 'deleted' });
+    pushUnique(
+      out,
+      anchor.cell.id,
+      makeRawLineChange(anchor.line, 'deleted', {
+        oldStartLine: 0,
+        oldLineCount: sourceLineCount(deleted.source),
+        newStartLine: anchor.line,
+        newLineCount: 0,
+      }),
+    );
+  }
+
+  for (const [cellId, changes] of out) {
+    out.set(cellId, normalizeChangeGroups(changes));
   }
 
   return out;
@@ -69,6 +88,11 @@ function findDeletedCellAnchor(
 function lastLineIndex(source: string): number {
   if (source.length === 0) return 0;
   return Math.max(0, source.split('\n').length - 1);
+}
+
+function sourceLineCount(source: string): number {
+  if (source.length === 0) return 0;
+  return source.split('\n').length;
 }
 
 function pushUnique(

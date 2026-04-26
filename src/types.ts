@@ -20,10 +20,31 @@ export interface ParsedNotebook {
 
 export type ChangeType = 'added' | 'modified' | 'deleted';
 
+export interface CellChangeGroup {
+  /** Stable within one computed cell diff; all touching markers share this id. */
+  id: number;
+  /** 0-based inclusive line in the base cell source. */
+  oldStartLine: number;
+  /** Number of base-cell lines covered by this logical change. */
+  oldLineCount: number;
+  /** 0-based inclusive line in the current cell source at the diff position. */
+  newStartLine: number;
+  /** Number of current-cell lines covered by this logical change. */
+  newLineCount: number;
+  /** First decorated line in the current cell. */
+  markerStartLine: number;
+  /** Number of decorated current-cell lines in this logical change. */
+  markerLineCount: number;
+}
+
 export interface CellLineChange {
   /** 0-based line number in the *current* (working-tree) cell source. */
   line: number;
   type: ChangeType;
+  /** Logical change group id; adjacent/touching line markers share one id. */
+  changeId: number;
+  /** Old/new and visible marker ranges for the whole logical change. */
+  group: CellChangeGroup;
   staged: boolean;
 }
 

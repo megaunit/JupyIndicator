@@ -30,7 +30,10 @@ repository to see indicators.
    back to exact-source hash and then a Jaccard-similarity heuristic.
 4. `cellDiffer.ts` — runs Myers line diff (via the [`diff`](https://www.npmjs.com/package/diff)
    package, v9) on each matched pair and classifies each line as
-   added / modified / deleted.
+   added / modified / deleted. Each painted line also carries a `changeId`
+   and a `group` range with base/current line spans; touching indicators share
+   the same `changeId`, so split lines and adjacent edits count as one logical
+   change.
 5. `decorator.ts` — applies `TextEditorDecorationType`s to the cell editor
    (found via `window.visibleTextEditors` filtered by the
    `vscode-notebook-cell` URI scheme).

@@ -3,10 +3,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseNotebook } from '../src/notebookParser';
 import { matchCells } from '../src/cellMatcher';
-import { diffCellSources } from '../src/cellDiffer';
+import { RawLineChange, diffCellSources } from '../src/cellDiffer';
 
 const fixture = (name: string): string =>
   fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
+
+function compact(changes: RawLineChange[]) {
+  return changes.map(({ line, type, changeId }) => ({ line, type, changeId }));
+}
 
 describe('integration: parse → match → diff', () => {
   it('detects a one-line modification in cell-a between basic and basic_modified', () => {
@@ -21,12 +25,12 @@ describe('integration: parse → match → diff', () => {
     const cellA = pairs.find((p) => p.current.id === 'cell-a')!;
     const changes = diffCellSources(cellA.base.source, cellA.current.source);
     // Only the middle line changed: `y = 2` → `y = 3`.
-    expect(changes).toEqual([{ line: 1, type: 'modified' }]);
+    expect(compact(changes)).toEqual([{ line: 1, type: 'modified', changeId: 0 }]);
 
     // Untouched cells yield no changes.
     const cellB = pairs.find((p) => p.current.id === 'cell-b')!;
-    expect(diffCellSources(cellB.base.source, cellB.current.source)).toEqual([]);
+    expect(compact(diffCellSources(cellB.base.source, cellB.current.source))).toEqual([]);
     const cellC = pairs.find((p) => p.current.id === 'cell-c')!;
-    expect(diffCellSources(cellC.base.source, cellC.current.source)).toEqual([]);
+    expect(compact(diffCellSources(cellC.base.source, cellC.current.source))).toEqual([]);
   });
 });

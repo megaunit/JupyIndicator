@@ -90,6 +90,50 @@ describe('cellMatcher', () => {
     expect(pairs[0].base.source).toContain('return 1');
   });
 
+  it('matches a split one-line cell without a stable id', () => {
+    const base = [
+      cell(
+        0,
+        'x',
+        'print(classification_report(y_test, y_pred, target_names=train.target_names))',
+        { stable: false },
+      ),
+    ];
+    const current = [
+      cell(
+        0,
+        'y',
+        'print(classification_report(y_test, y_pred,\n target_names=train.target_names))',
+        { stable: false },
+      ),
+    ];
+
+    const { pairs, addedCurrent, deletedBase } = matchCells(base, current);
+
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].base.id).toBe('x');
+    expect(pairs[0].current.id).toBe('y');
+    expect(addedCurrent).toHaveLength(0);
+    expect(deletedBase).toHaveLength(0);
+  });
+
+  it('matches a split first line in a duplicate-heavy cell without a stable id', () => {
+    const base = [
+      cell(0, 'x', 'fdsafdsa\nfdsafs\nfdsafs\n\n\n\n', { stable: false }),
+    ];
+    const current = [
+      cell(0, 'y', 'fdsa\nfdsa\nfdsafs\nfdsafs\n\n\n\n', { stable: false }),
+    ];
+
+    const { pairs, addedCurrent, deletedBase } = matchCells(base, current);
+
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].base.id).toBe('x');
+    expect(pairs[0].current.id).toBe('y');
+    expect(addedCurrent).toHaveLength(0);
+    expect(deletedBase).toHaveLength(0);
+  });
+
   it('does not match cells that are too dissimilar', () => {
     const base = [cell(0, 'x', 'foo bar baz', { stable: false })];
     const current = [cell(0, 'y', 'entirely different content here', { stable: false })];

@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { diffChars } from 'diff';
 import { ParsedCell } from './types';
 
 export interface CellPair {
@@ -15,8 +16,8 @@ export interface MatchResult {
 }
 
 /**
- * Similarity threshold (Jaccard over non-blank source lines) below which
- * unmatched cells are left unpaired rather than reported as a modification.
+ * Similarity threshold below which unmatched cells are left unpaired rather
+ * than reported as a modification.
  */
 const SIMILARITY_THRESHOLD = 0.4;
 
@@ -65,7 +66,9 @@ export function matchCells(baseCells: ParsedCell[], currentCells: ParsedCell[]):
   }
 
   // Phase 3: similarity match over remaining cells of the same type.
-  // Greedy: rank all (current, base) pairs by Jaccard, take the best.
+  // Greedy: rank all (current, base) pairs by source similarity, take the best.
+  // Character similarity is included because a one-line cell split into two
+  // lines has a very low line-set Jaccard score but is still the same cell.
   const remainingBase = baseCells.filter((c) => !baseTaken.has(c.index));
   const remainingCurrent = currentCells.filter((c) => !currentTaken.has(c.index));
 
@@ -83,13 +86,22 @@ export function matchCells(baseCells: ParsedCell[], currentCells: ParsedCell[]):
     const curSet = nonBlankLineSet(cur.source);
     for (const base of remainingBase) {
       if (base.cellType !== cur.cellType) continue;
-      const score = jaccard(curSet, baseLineSets.get(base.index)!);
+      const score = sourceSimilarity(
+        cur.source,
+        base.source,
+        curSet,
+        baseLineSets.get(base.index)!,
+      );
       if (score >= SIMILARITY_THRESHOLD) {
         candidates.push({ current: cur, base, score });
       }
     }
   }
-  candidates.sort((a, b) => b.score - a.score);
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      Math.abs(a.current.index - a.base.index) - Math.abs(b.current.index - b.base.index),
+  );
   for (const cand of candidates) {
     if (baseTaken.has(cand.base.index) || currentTaken.has(cand.current.index)) continue;
     pairs.push({ base: cand.base, current: cand.current });
@@ -124,4 +136,24 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   for (const x of a) if (b.has(x)) inter++;
   const union = a.size + b.size - inter;
   return union === 0 ? 0 : inter / union;
+}
+
+function sourceSimilarity(
+  a: string,
+  b: string,
+  aLineSet = nonBlankLineSet(a),
+  bLineSet = nonBlankLineSet(b),
+): number {
+  return Math.max(jaccard(aLineSet, bLineSet), characterSimilarity(a, b));
+}
+
+function characterSimilarity(a: string, b: string): number {
+  const longest = Math.max(a.length, b.length);
+  if (longest === 0) return 1;
+
+  let unchanged = 0;
+  for (const change of diffChars(a, b)) {
+    if (!change.added && !change.removed) unchanged += change.value.length;
+  }
+  return unchanged / longest;
 }

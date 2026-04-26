@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { parseNotebook } from './notebookParser';
-import { RawLineChange } from './cellDiffer';
+import { RawLineChange, normalizeChangeGroups } from './cellDiffer';
 import { getGitVersions } from './gitProvider';
 import { computeNotebookChanges } from './notebookDiffer';
 import {
@@ -267,7 +267,7 @@ async function recompute(nb: vscode.NotebookDocument, generation: number): Promi
       const k = `${ch.line}|${ch.type}`;
       if (!mergedKey.has(k)) merged.push({ ...ch, staged: false });
     }
-    s.changes.set(cur.id, merged);
+    s.changes.set(cur.id, normalizeChangeGroups(merged));
   }
   if (!enabled || generation !== s.generation || !states.has(key)) return;
   paintAll(nb, s);

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeNotebookChanges } from '../src/notebookDiffer';
+import { RawLineChange } from '../src/cellDiffer';
 import { CellType, ParsedCell, ParsedNotebook } from '../src/types';
 
 function notebook(cells: ParsedCell[]): ParsedNotebook {
@@ -21,15 +22,19 @@ function cell(
   };
 }
 
+function compact(changes: RawLineChange[] | undefined) {
+  return (changes ?? []).map(({ line, type, changeId }) => ({ line, type, changeId }));
+}
+
 describe('notebookDiffer.computeNotebookChanges', () => {
   it('marks every current line as added when the base notebook is missing', () => {
     const current = notebook([cell(0, 'a', 'x = 1\ny = 2')]);
 
     const changes = computeNotebookChanges(null, current);
 
-    expect(changes.get('a')).toEqual([
-      { line: 0, type: 'added' },
-      { line: 1, type: 'added' },
+    expect(compact(changes.get('a'))).toEqual([
+      { line: 0, type: 'added', changeId: 0 },
+      { line: 1, type: 'added', changeId: 0 },
     ]);
   });
 
@@ -46,8 +51,8 @@ describe('notebookDiffer.computeNotebookChanges', () => {
 
     const changes = computeNotebookChanges(base, current);
 
-    expect(changes.get('a')).toEqual([]);
-    expect(changes.get('b')).toEqual([{ line: 0, type: 'deleted' }]);
+    expect(compact(changes.get('a'))).toEqual([]);
+    expect(compact(changes.get('b'))).toEqual([{ line: 0, type: 'deleted', changeId: 0 }]);
   });
 
   it('anchors a trailing deleted whole cell on the previous surviving cell', () => {
@@ -59,7 +64,7 @@ describe('notebookDiffer.computeNotebookChanges', () => {
 
     const changes = computeNotebookChanges(base, current);
 
-    expect(changes.get('a')).toEqual([{ line: 1, type: 'deleted' }]);
+    expect(compact(changes.get('a'))).toEqual([{ line: 1, type: 'deleted', changeId: 0 }]);
   });
 
   it('combines line diffs with deleted whole-cell anchors', () => {
@@ -75,8 +80,8 @@ describe('notebookDiffer.computeNotebookChanges', () => {
 
     const changes = computeNotebookChanges(base, current);
 
-    expect(changes.get('a')).toEqual([{ line: 0, type: 'modified' }]);
-    expect(changes.get('b')).toEqual([{ line: 0, type: 'deleted' }]);
+    expect(compact(changes.get('a'))).toEqual([{ line: 0, type: 'modified', changeId: 0 }]);
+    expect(compact(changes.get('b'))).toEqual([{ line: 0, type: 'deleted', changeId: 0 }]);
   });
 
   it('marks only the inserted blank line when pressing Enter at the end of a line', () => {
@@ -85,7 +90,7 @@ describe('notebookDiffer.computeNotebookChanges', () => {
 
     const changes = computeNotebookChanges(base, current);
 
-    expect(changes.get('a')).toEqual([{ line: 2, type: 'added' }]);
+    expect(compact(changes.get('a'))).toEqual([{ line: 2, type: 'added', changeId: 0 }]);
   });
 
   it('marks both resulting lines as modified when pressing Enter in the middle of a line', () => {
@@ -94,9 +99,34 @@ describe('notebookDiffer.computeNotebookChanges', () => {
 
     const changes = computeNotebookChanges(base, current);
 
-    expect(changes.get('a')).toEqual([
-      { line: 0, type: 'modified' },
-      { line: 1, type: 'modified' },
+    expect(compact(changes.get('a'))).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'modified', changeId: 0 },
+    ]);
+  });
+
+  it('marks a split one-line cell without stable ids as modified', () => {
+    const base = notebook([
+      cell(
+        0,
+        'base',
+        'print(classification_report(y_test, y_pred, target_names=train.target_names))',
+        { stable: false },
+      ),
+    ]);
+    const currentCell = cell(
+      0,
+      'current',
+      'print(classification_report(y_test, y_pred,\n target_names=train.target_names))',
+      { stable: false },
+    );
+    const current = notebook([currentCell]);
+
+    const changes = computeNotebookChanges(base, current);
+
+    expect(compact(changes.get(currentCell.id))).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'modified', changeId: 0 },
     ]);
   });
 
@@ -106,6 +136,6 @@ describe('notebookDiffer.computeNotebookChanges', () => {
 
     const changes = computeNotebookChanges(base, current);
 
-    expect(changes.get('a')).toEqual([{ line: 1, type: 'added' }]);
+    expect(compact(changes.get('a'))).toEqual([{ line: 1, type: 'added', changeId: 0 }]);
   });
 });
