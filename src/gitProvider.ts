@@ -2,6 +2,8 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { GitVersions, GitWatchPaths } from './types';
+import { NbdimeDiffRunner, runNbdimeDiff } from './nbdimeProvider';
+import { NbdimeDiff } from './nbdimeTypes';
 
 interface ExecResult {
   stdout: string;
@@ -16,6 +18,23 @@ interface GitRepositoryInfo {
   gitDir: string;
   gitCommonDir: string;
   headRef: string | null;
+}
+
+export interface GitNbdimeDiffs {
+  inRepo: boolean;
+  /** Contents of the file at HEAD, used as nbdime's base notebook. */
+  head: string | null;
+  /** Contents of the file in the index, used as nbdime's staged notebook. */
+  index: string | null;
+  /** Current comparison contents: saved file text, or the caller-provided editor buffer. */
+  working: string | null;
+  unstaged: NbdimeDiff;
+  staged: NbdimeDiff;
+  total: NbdimeDiff;
+  nbdimeAvailable: boolean;
+  nbdimeError: string | null;
+  repoRoot: string | null;
+  watchPaths: GitWatchPaths | null;
 }
 
 function runGit(args: string[], cwd: string): Promise<ExecResult> {
@@ -86,6 +105,65 @@ export async function getGitVersions(filePath: string): Promise<GitVersions> {
   };
 }
 
+/**
+ * Read git snapshots and compare them with nbdime. nbdime is the source of
+ * truth for notebook-aware source changes; git is still used to obtain the
+ * HEAD/index/working versions needed for staged and unstaged comparisons.
+ */
+export async function getGitNbdimeDiffs(
+  filePath: string,
+  diffRunner: NbdimeDiffRunner = runNbdimeDiff,
+  workingOverride?: string,
+): Promise<GitNbdimeDiffs> {
+  const repo = await findRepoInfo(path.dirname(filePath));
+  if (!repo) {
+    return emptyNbdimeDiffs(false);
+  }
+
+  const relPath = relativeGitPath(repo.repoRoot, filePath);
+  const [head, index] = await Promise.all([
+    gitShow(repo.repoRoot, `HEAD:${relPath}`),
+    gitShow(repo.repoRoot, `:${relPath}`),
+  ]);
+  const working = workingOverride ?? readFileIfExists(filePath);
+  if (working === null) {
+    return {
+      ...emptyNbdimeDiffs(true),
+      head,
+      index,
+      repoRoot: repo.repoRoot,
+      watchPaths: gitStateFiles(repo),
+    };
+  }
+
+  const base = head;
+  const stagedTarget = index;
+  const unstagedBase = index ?? head;
+  const [unstaged, staged, total] = await Promise.all([
+    diffRunner(unstagedBase, working),
+    stagedTarget !== null
+      ? diffRunner(base, stagedTarget)
+      : Promise.resolve({ ok: true, diff: [], error: null }),
+    diffRunner(base, working),
+  ]);
+  const firstError = [unstaged, staged, total].find((result) => !result.ok)?.error ?? null;
+  const nbdimeAvailable = firstError === null;
+
+  return {
+    inRepo: true,
+    head,
+    index,
+    working,
+    unstaged: unstaged.ok ? unstaged.diff : [],
+    staged: staged.ok ? staged.diff : [],
+    total: total.ok ? total.diff : [],
+    nbdimeAvailable,
+    nbdimeError: firstError,
+    repoRoot: repo.repoRoot,
+    watchPaths: gitStateFiles(repo),
+  };
+}
+
 /** Returns git state files for watching, including worktree and packed-ref layouts. */
 export function gitStateFiles(repo: {
   gitDir: string;
@@ -123,4 +201,28 @@ function realpathIfExists(filePath: string): string {
   } catch {
     return filePath;
   }
+}
+
+function readFileIfExists(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function emptyNbdimeDiffs(inRepo: boolean): GitNbdimeDiffs {
+  return {
+    inRepo,
+    head: null,
+    index: null,
+    working: null,
+    unstaged: [],
+    staged: [],
+    total: [],
+    nbdimeAvailable: true,
+    nbdimeError: null,
+    repoRoot: null,
+    watchPaths: null,
+  };
 }

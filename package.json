@@ -44,6 +44,16 @@
           "maximum": 2000,
           "description": "Milliseconds to debounce recomputation after a cell edit."
         },
+        "jupyindicator.nbdimePythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python executable used to import nbdime. Leave empty to try py -3 on Windows, then python3/python."
+        },
+        "jupyindicator.autoInstallNbdime": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically install nbdime into an extension-managed Python virtual environment when it is not available."
+        },
         "jupyindicator.colors.unstagedAdded": {
           "type": "string",
           "default": "#2ea043",

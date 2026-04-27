@@ -31,8 +31,8 @@ interface LineChangeLike {
  *     the last line of `newSrc`.
  *
  * Every returned line also carries a logical change group. Touching markers
- * share one `changeId`, so a split modified line (one old line becoming two
- * current lines) is represented as two blue markers but one logical change.
+ * share one `changeId`, so split modified lines are represented as multiple
+ * blue markers but one logical change.
  */
 export function diffCellSources(oldSrc: string, newSrc: string): RawLineChange[] {
   const simple = diffSingleContiguousChange(oldSrc, newSrc);
@@ -128,27 +128,7 @@ export function diffCellSources(oldSrc: string, newSrc: string): RawLineChange[]
         const core = trailingBlanks === 0 ? addedLines : addedLines.slice(0, coreAd);
 
         const group = createGroup(nextChangeId++, oldBase, rm, lineBase, ad);
-        const splitLines = splitLineModifiedLines(removedLines, core);
-        if (splitLines) {
-          for (const line of splitLines) {
-            result.push(lineChange(lineBase + line, 'modified', group));
-          }
-        } else {
-          const modCount = Math.min(rm, coreAd);
-          for (let j = 0; j < modCount; j++) {
-            result.push(lineChange(lineBase + j, 'modified', group));
-          }
-          if (coreAd > rm) {
-            for (let j = modCount; j < coreAd; j++) {
-              result.push(lineChange(lineBase + j, 'added', group));
-            }
-          } else if (rm > coreAd) {
-            // Surplus removed lines → one deletion marker anchored at the
-            // line following the paired modification. Clamped to cell
-            // length later.
-            result.push(lineChange(lineBase + modCount, 'deleted', group));
-          }
-        }
+        result.push(...pairedLineChanges(removedLines, core, lineBase, group));
         for (let j = 0; j < trailingBlanks; j++) {
           result.push(lineChange(lineBase + coreAd + j, 'added', group));
         }
@@ -208,7 +188,12 @@ function diffSingleContiguousChange(
   }
 
   if (addedLines.length === 0) return null;
-  if (removedLines.length !== 1 && addedLines.length !== 1) return null;
+  const trailingBlanks = countTrailingEnterBlanks(removedLines, addedLines);
+  const coreAd = addedLines.length - trailingBlanks;
+  const core = addedLines.slice(0, coreAd);
+  const splitLines = splitModifiedLineIndexes(removedLines, core);
+
+  if (removedLines.length !== 1 && addedLines.length !== 1 && !splitLines) return null;
 
   const group = createGroup(
     0,
@@ -218,10 +203,6 @@ function diffSingleContiguousChange(
     addedLines.length,
   );
   const result: RawLineChange[] = [];
-  const trailingBlanks = countTrailingEnterBlanks(removedLines, addedLines);
-  const coreAd = addedLines.length - trailingBlanks;
-  const core = addedLines.slice(0, coreAd);
-  const splitLines = splitLineModifiedLines(removedLines, core);
 
   if (splitLines) {
     for (const line of splitLines) {
@@ -378,13 +359,122 @@ function allSame(lines: string[]): boolean {
   return lines.every((line) => line === lines[0]);
 }
 
-function splitLineModifiedLines(
+function splitModifiedLineIndexes(
   removedLines: string[],
   addedLines: string[],
 ): number[] | null {
-  if (removedLines.length !== 1 || addedLines.length < 2) return null;
+  if (removedLines.length === 1) {
+    return splitSingleLineModifiedIndexes(removedLines[0], addedLines);
+  }
+  return splitMultipleLineModifiedIndexes(removedLines, addedLines);
+}
 
-  const oldLine = removedLines[0];
+function pairedLineChanges(
+  removedLines: string[],
+  addedLines: string[],
+  lineBase: number,
+  group: CellChangeGroup,
+): RawLineChange[] {
+  if (removedLines.length === 0) {
+    return addedLines.map((_, j) => lineChange(lineBase + j, 'added', group));
+  }
+  if (addedLines.length === 0) {
+    return [lineChange(lineBase, 'deleted', group)];
+  }
+
+  const splitLines = splitModifiedLineIndexes(removedLines, addedLines);
+  if (splitLines) {
+    return splitLines.map((line) => lineChange(lineBase + line, 'modified', group));
+  }
+
+  const anchors = commonLineAnchors(removedLines, addedLines);
+  if (anchors.length > 0) {
+    const result: RawLineChange[] = [];
+    let oldStart = 0;
+    let newStart = 0;
+
+    for (const anchor of anchors) {
+      result.push(
+        ...pairedLineChanges(
+          removedLines.slice(oldStart, anchor.oldIndex),
+          addedLines.slice(newStart, anchor.newIndex),
+          lineBase + newStart,
+          group,
+        ),
+      );
+      oldStart = anchor.oldIndex + 1;
+      newStart = anchor.newIndex + 1;
+    }
+
+    result.push(
+      ...pairedLineChanges(
+        removedLines.slice(oldStart),
+        addedLines.slice(newStart),
+        lineBase + newStart,
+        group,
+      ),
+    );
+    return result;
+  }
+
+  const result: RawLineChange[] = [];
+  const modCount = Math.min(removedLines.length, addedLines.length);
+  for (let j = 0; j < modCount; j++) {
+    result.push(lineChange(lineBase + j, 'modified', group));
+  }
+  if (addedLines.length > removedLines.length) {
+    for (let j = modCount; j < addedLines.length; j++) {
+      result.push(lineChange(lineBase + j, 'added', group));
+    }
+  } else if (removedLines.length > addedLines.length) {
+    // Surplus removed lines → one deletion marker anchored at the line following
+    // the paired modification. Clamped to cell length later.
+    result.push(lineChange(lineBase + modCount, 'deleted', group));
+  }
+  return result;
+}
+
+interface LineAnchor {
+  oldIndex: number;
+  newIndex: number;
+}
+
+function commonLineAnchors(removedLines: string[], addedLines: string[]): LineAnchor[] {
+  const rows = removedLines.length + 1;
+  const cols = addedLines.length + 1;
+  const dp = Array.from({ length: rows }, () => Array<number>(cols).fill(0));
+
+  for (let i = removedLines.length - 1; i >= 0; i--) {
+    for (let j = addedLines.length - 1; j >= 0; j--) {
+      dp[i][j] =
+        removedLines[i] === addedLines[j]
+          ? 1 + dp[i + 1][j + 1]
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const anchors: LineAnchor[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < removedLines.length && j < addedLines.length) {
+    if (removedLines[i] === addedLines[j]) {
+      anchors.push({ oldIndex: i, newIndex: j });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return anchors;
+}
+
+function splitSingleLineModifiedIndexes(
+  oldLine: string,
+  addedLines: string[],
+): number[] | null {
+  if (addedLines.length < 2) return null;
   if (!isLikelySplitLine(oldLine, addedLines)) {
     return null;
   }
@@ -396,6 +486,108 @@ function splitLineModifiedLines(
     return lineIndexRange(0, addedLines.length - 1);
   }
   return lineIndexRange(0, addedLines.length);
+}
+
+function splitMultipleLineModifiedIndexes(
+  removedLines: string[],
+  addedLines: string[],
+): number[] | null {
+  if (removedLines.length < 2 || addedLines.length <= removedLines.length) return null;
+
+  const match = findBestSplitBlockMatch(removedLines, addedLines, 0, 0, new Map());
+  return match && match.indexes.length > 0 ? match.indexes : null;
+}
+
+interface SplitBlockMatch {
+  indexes: number[];
+  score: number;
+}
+
+function findBestSplitBlockMatch(
+  removedLines: string[],
+  addedLines: string[],
+  oldIndex: number,
+  newIndex: number,
+  memo: Map<string, SplitBlockMatch | null>,
+): SplitBlockMatch | null {
+  const key = `${oldIndex}:${newIndex}`;
+  if (memo.has(key)) return memo.get(key) ?? null;
+
+  if (oldIndex === removedLines.length) {
+    const match = newIndex === addedLines.length ? { indexes: [], score: 0 } : null;
+    memo.set(key, match);
+    return match;
+  }
+
+  let best: SplitBlockMatch | null = null;
+  const remainingOldLines = removedLines.length - oldIndex - 1;
+  const maxEnd = addedLines.length - remainingOldLines;
+
+  for (let end = newIndex + 1; end <= maxEnd; end++) {
+    const segment = addedLines.slice(newIndex, end);
+    if (
+      segment.length > 1 &&
+      containsFutureRemovedLine(segment, removedLines, oldIndex + 1)
+    ) {
+      continue;
+    }
+    const segmentMatch = splitSegmentMatch(removedLines[oldIndex], segment);
+    if (!segmentMatch) continue;
+
+    const rest = findBestSplitBlockMatch(
+      removedLines,
+      addedLines,
+      oldIndex + 1,
+      end,
+      memo,
+    );
+    if (!rest) continue;
+
+    const candidate = {
+      indexes: [
+        ...segmentMatch.indexes.map((line) => newIndex + line),
+        ...rest.indexes,
+      ],
+      score: segmentMatch.score + rest.score,
+    };
+    if (
+      !best ||
+      candidate.score > best.score ||
+      (candidate.score === best.score && candidate.indexes.length > best.indexes.length)
+    ) {
+      best = candidate;
+    }
+  }
+
+  memo.set(key, best);
+  return best;
+}
+
+function containsFutureRemovedLine(
+  addedSegment: string[],
+  removedLines: string[],
+  startOldIndex: number,
+): boolean {
+  const futureRemovedLines = new Set(removedLines.slice(startOldIndex));
+  return addedSegment.some((line) => futureRemovedLines.has(line));
+}
+
+function splitSegmentMatch(oldLine: string, addedLines: string[]): SplitBlockMatch | null {
+  if (addedLines.length === 1) {
+    const newLine = addedLines[0];
+    return {
+      indexes: newLine === oldLine ? [] : [0],
+      score: newLine === oldLine ? 1 : lineSimilarity(oldLine, newLine),
+    };
+  }
+
+  const indexes = splitSingleLineModifiedIndexes(oldLine, addedLines);
+  if (!indexes || indexes.length !== addedLines.length) return null;
+
+  return {
+    indexes,
+    score: splitLineSimilarity(oldLine, addedLines),
+  };
 }
 
 function isLikelySplitLine(oldLine: string, addedLines: string[]): boolean {
@@ -413,6 +605,14 @@ function splitJoinCandidates(addedLines: string[]): string[] {
     .join('');
 
   return withoutContinuationIndent === joined ? [joined] : [joined, withoutContinuationIndent];
+}
+
+function splitLineSimilarity(oldLine: string, addedLines: string[]): number {
+  return Math.max(
+    ...splitJoinCandidates(addedLines).map((joinedNewLine) =>
+      joinedNewLine === oldLine ? 1 : lineSimilarity(oldLine, joinedNewLine),
+    ),
+  );
 }
 
 function countTrailingEnterBlanks(

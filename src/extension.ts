@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { parseNotebook } from './notebookParser';
-import { RawLineChange, normalizeChangeGroups } from './cellDiffer';
-import { getGitVersions } from './gitProvider';
+import { normalizeChangeGroups } from './cellDiffer';
+import { GitNbdimeDiffs, getGitNbdimeDiffs } from './gitProvider';
+import { computeNotebookChangesFromNbdimeDiff } from './nbdimeNotebookDiffer';
+import { createNbdimeDiffRunner } from './nbdimeProvider';
 import { computeNotebookChanges } from './notebookDiffer';
+import { parseNotebook } from './notebookParser';
 import {
   DecorationSet,
   applyCellDecorations,
@@ -15,20 +17,17 @@ import {
 import {
   CellLineChange,
   CellType,
-  ParsedCell,
-  ParsedNotebook,
   GitWatchPaths,
 } from './types';
 
 interface GitCache {
-  head: ParsedNotebook | null;
-  index: ParsedNotebook | null;
   inRepo: boolean;
   repoRoot: string | null;
+  changes: Map<string, CellLineChange[]>;
 }
 
 interface NotebookState {
-  /** Latest per-cell change list, keyed by current cell id. */
+  /** Latest per-cell change list, keyed by current cell id and fallback cell index. */
   changes: Map<string, CellLineChange[]>;
   timer: NodeJS.Timeout | null;
   git: GitCache | null;
@@ -47,10 +46,12 @@ const states = new Map<string, NotebookState>();
 const gitWatchers = new Map<string, GitWatch>();
 let output: vscode.OutputChannel;
 let enabled = true;
+let globalStoragePath: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('JupyIndicator');
   context.subscriptions.push(output);
+  globalStoragePath = context.globalStorageUri.fsPath;
 
   readConfigAndRebuildDecorations();
   enabled = getConfig().get<boolean>('enabled', true);
@@ -63,10 +64,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeNotebookDocument((ev) => {
       if (!enabled) return;
       if (!isTargetNotebook(ev.notebook)) return;
+      invalidateGit(ev.notebook);
       scheduleRecompute(ev.notebook, getDebounceMs());
     }),
     vscode.workspace.onDidSaveNotebookDocument((nb) => {
-      if (isTargetNotebook(nb)) scheduleRecompute(nb, 0);
+      if (isTargetNotebook(nb)) {
+        invalidateGit(nb);
+        scheduleRecompute(nb, 0);
+      }
     }),
     vscode.window.onDidChangeActiveNotebookEditor((ed) => {
       if (ed && isTargetNotebook(ed.notebook)) scheduleRecompute(ed.notebook, 0);
@@ -97,6 +102,20 @@ export function activate(context: vscode.ExtensionContext): void {
             invalidateGit(nb);
             scheduleRecompute(nb, 0);
           }
+        }
+      }
+      if (ev.affectsConfiguration('jupyindicator.nbdimePythonPath')) {
+        for (const nb of vscode.workspace.notebookDocuments) {
+          if (!isTargetNotebook(nb)) continue;
+          invalidateGit(nb);
+          scheduleRecompute(nb, 0);
+        }
+      }
+      if (ev.affectsConfiguration('jupyindicator.autoInstallNbdime')) {
+        for (const nb of vscode.workspace.notebookDocuments) {
+          if (!isTargetNotebook(nb)) continue;
+          invalidateGit(nb);
+          scheduleRecompute(nb, 0);
         }
       }
     }),
@@ -143,6 +162,14 @@ function getConfig(): vscode.WorkspaceConfiguration {
 
 function getDebounceMs(): number {
   return getConfig().get<number>('debounceMs', 150);
+}
+
+function getNbdimePythonPath(): string {
+  return getConfig().get<string>('nbdimePythonPath', '');
+}
+
+function getAutoInstallNbdime(): boolean {
+  return getConfig().get<boolean>('autoInstallNbdime', true);
 }
 
 function readConfigAndRebuildDecorations(): void {
@@ -224,18 +251,23 @@ async function recompute(nb: vscode.NotebookDocument, generation: number): Promi
   const s = stateFor(nb);
   if (!enabled || generation !== s.generation) return;
 
-  const current = fromNotebookDocument(nb);
-
   if (!s.git) {
-    const raw = await getGitVersions(nb.uri.fsPath);
+    const currentRaw = notebookDocumentToIpynb(nb);
+    const raw = await getGitNbdimeDiffs(
+      nb.uri.fsPath,
+      createNbdimeDiffRunner({
+        pythonPath: getNbdimePythonPath(),
+        managedStoragePath: globalStoragePath,
+        autoInstall: getAutoInstallNbdime(),
+      }),
+      currentRaw,
+    );
     if (!enabled || generation !== s.generation || !states.has(key)) return;
-    s.git = {
-      inRepo: raw.inRepo,
-      repoRoot: raw.repoRoot,
-      head: raw.head !== null ? parseNotebook(raw.head) : null,
-      index: raw.index !== null ? parseNotebook(raw.index) : null,
-    };
+    s.git = buildGitCache(raw);
     if (raw.repoRoot && raw.watchPaths) registerWatcher(raw.repoRoot, raw.watchPaths, key);
+    if (!raw.nbdimeAvailable && raw.nbdimeError) {
+      output.appendLine(`nbdime unavailable, using snapshot fallback: ${raw.nbdimeError}`);
+    }
   }
 
   if (!s.git.inRepo) {
@@ -245,40 +277,78 @@ async function recompute(nb: vscode.NotebookDocument, generation: number): Promi
     return;
   }
 
-  // Compute total changes (HEAD → current) and unstaged (index → current).
-  // A line is "staged" iff it appears in total but not in unstaged.
-  const total = computeNotebookChanges(s.git.head, current);
-  const unstaged = computeNotebookChanges(s.git.index ?? s.git.head, current);
-
   s.changes.clear();
+  for (const [cellId, changes] of s.git.changes) {
+    s.changes.set(cellId, changes);
+  }
+  if (!enabled || generation !== s.generation || !states.has(key)) return;
+  paintAll(nb, s);
+}
+
+function buildGitCache(raw: GitNbdimeDiffs): GitCache {
+  if (!raw.inRepo || raw.working === null) {
+    return { inRepo: raw.inRepo, repoRoot: raw.repoRoot, changes: new Map() };
+  }
+
+  const current = parseNotebook(raw.working);
+  let unstaged = computeNotebookChangesFromNbdimeDiff(raw.unstaged, raw.index, raw.working);
+  let total = computeNotebookChangesFromNbdimeDiff(raw.total, raw.head, raw.working);
+
+  if (!raw.nbdimeAvailable) {
+    unstaged = computeNotebookChanges(
+      parseNotebook(raw.index ?? raw.head),
+      current,
+    );
+    total = computeNotebookChanges(parseNotebook(raw.head), current);
+  }
+
+  // In a repository with no commits yet, the direct HEAD -> index comparison
+  // is the staged source of truth when the index and saved file match.
+  if (!hasChanges(total) && raw.index !== null && raw.index === raw.working) {
+    const staged = computeNotebookChangesFromNbdimeDiff(raw.staged, raw.head, raw.index);
+    if (hasChanges(staged)) total = staged;
+  }
+
+  const changes = new Map<string, CellLineChange[]>();
   for (const cur of current.cells) {
     const all = total.get(cur.id) ?? [];
     const un = unstaged.get(cur.id) ?? [];
     const unSet = new Set(un.map((c) => `${c.line}|${c.type}`));
     const merged: CellLineChange[] = [];
+
     for (const ch of all) {
-      const staged = !unSet.has(`${ch.line}|${ch.type}`);
-      merged.push({ ...ch, staged });
+      merged.push({ ...ch, staged: !unSet.has(`${ch.line}|${ch.type}`) });
     }
-    // Any unstaged change that wasn't in total (rare: e.g. identical lines in
-    // current and HEAD but different in index) is still worth showing.
+
+    // If the index contains a change that the saved worktree reverted, total
+    // can be empty while the index-to-worktree diff still has an unstaged
+    // deletion. That deletion is visible in git status and should be shown.
     const mergedKey = new Set(merged.map((c) => `${c.line}|${c.type}`));
     for (const ch of un) {
       const k = `${ch.line}|${ch.type}`;
       if (!mergedKey.has(k)) merged.push({ ...ch, staged: false });
     }
-    s.changes.set(cur.id, normalizeChangeGroups(merged));
+
+    const normalized = normalizeChangeGroups(merged);
+    changes.set(cur.id, normalized);
+    changes.set(cellIndexKey(cur.index), normalized);
   }
-  if (!enabled || generation !== s.generation || !states.has(key)) return;
-  paintAll(nb, s);
+
+  return { inRepo: raw.inRepo, repoRoot: raw.repoRoot, changes };
+}
+
+function hasChanges<T>(changes: Map<string, T[]>): boolean {
+  for (const list of changes.values()) {
+    if (list.length > 0) return true;
+  }
+  return false;
 }
 
 function paintAll(nb: vscode.NotebookDocument, s: NotebookState): void {
   for (const cell of nb.getCells()) {
     const editor = findCellEditor(cell.document.uri);
     if (!editor) continue;
-    const cellId = cellIdFor(cell);
-    const changes = s.changes.get(cellId) ?? [];
+    const changes = changesForCell(s, cell);
     if (changes.length === 0) clearCellDecorations(editor, decorations);
     else applyCellDecorations(editor, changes, decorations);
   }
@@ -295,9 +365,17 @@ function reapplyFromCache(editor: vscode.TextEditor): void {
   if (!s) return;
   const cell = nb.getCells().find((c) => c.document.uri.toString() === editor.document.uri.toString());
   if (!cell) return;
-  const changes = s.changes.get(cellIdFor(cell)) ?? [];
+  const changes = changesForCell(s, cell);
   if (changes.length === 0) clearCellDecorations(editor, decorations);
   else applyCellDecorations(editor, changes, decorations);
+}
+
+function changesForCell(s: NotebookState, cell: vscode.NotebookCell): CellLineChange[] {
+  return s.changes.get(cellIdFor(cell)) ?? s.changes.get(cellIndexKey(cell.index)) ?? [];
+}
+
+function cellIndexKey(index: number): string {
+  return `__cell_index_${index}`;
 }
 
 function reapplyAll(): void {
@@ -314,30 +392,40 @@ function clearAll(): void {
   }
 }
 
-/** Build a ParsedNotebook from the in-memory NotebookDocument. */
-function fromNotebookDocument(doc: vscode.NotebookDocument): ParsedNotebook {
-  const cells: ParsedCell[] = doc.getCells().map((cell, index) => {
-    const cellType: CellType =
-      cell.kind === vscode.NotebookCellKind.Markup ? 'markdown' : 'code';
-    const source = cell.document.getText();
-    const stableId = extractCellMetadataId(cell.metadata);
-    return {
-      id: stableId ?? synthesizeId(index, cellType, source),
-      hasStableId: stableId !== null,
-      index,
-      cellType,
-      source,
-    };
-  });
-  return { nbformat: 4, nbformatMinor: 5, cells };
-}
-
 function cellIdFor(cell: vscode.NotebookCell): string {
   const stableId = extractCellMetadataId(cell.metadata);
   if (stableId !== null) return stableId;
   const cellType: CellType =
     cell.kind === vscode.NotebookCellKind.Markup ? 'markdown' : 'code';
   return synthesizeId(cell.index, cellType, cell.document.getText());
+}
+
+function notebookDocumentToIpynb(doc: vscode.NotebookDocument): string {
+  return JSON.stringify({
+    cells: doc.getCells().map((cell, index) => {
+      const cellType = notebookCellType(cell);
+      const metadataId = extractCellMetadataId(cell.metadata) ??
+        synthesizeId(index, cellType, cell.document.getText());
+      const metadata = metadataId ? { id: metadataId } : {};
+      const base = {
+        cell_type: cellType,
+        metadata,
+        source: cell.document.getText(),
+      };
+      if (cellType === 'code') {
+        return { ...base, execution_count: null, outputs: [] };
+      }
+      return base;
+    }),
+    metadata: {},
+    nbformat: 4,
+    nbformat_minor: 5,
+  });
+}
+
+function notebookCellType(cell: vscode.NotebookCell): CellType {
+  if (cell.kind === vscode.NotebookCellKind.Markup) return 'markdown';
+  return 'code';
 }
 
 function extractCellMetadataId(md: { readonly [k: string]: any }): string | null {

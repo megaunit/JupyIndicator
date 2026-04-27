@@ -132,11 +132,11 @@ function verticalBarSvg(color: string): string {
 }
 
 function modifiedBarSvg(color: string): string {
-  // VS Code's native dirty-diff modified gutter uses a 3px right-leaning stripe tile.
+  // VS Code's native dirty-diff modified gutter uses a 3px -45deg stripe tile.
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="6" height="18" viewBox="0 0 6 18">` +
     `<defs>` +
-    `<linearGradient id="modified-stripe-gradient" x1="0" y1="0" x2="3" y2="3" gradientUnits="userSpaceOnUse">` +
+    `<linearGradient id="modified-stripe-gradient" x1="0" y1="3" x2="3" y2="0" gradientUnits="userSpaceOnUse">` +
     `<stop offset="0" stop-color="${color}"/>` +
     `<stop offset="25%" stop-color="${color}"/>` +
     `<stop offset="25%" stop-color="${color}" stop-opacity="0"/>` +

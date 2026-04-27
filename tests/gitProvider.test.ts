@@ -3,7 +3,11 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getGitVersions, gitStateFiles } from '../src/gitProvider';
+import { RawLineChange } from '../src/cellDiffer';
+import { getGitNbdimeDiffs, getGitVersions, gitStateFiles } from '../src/gitProvider';
+import { computeNotebookChangesFromNbdimeDiff } from '../src/nbdimeNotebookDiffer';
+import { NbdimeDiffRunner } from '../src/nbdimeProvider';
+import { parseNotebook } from '../src/notebookParser';
 
 let tmpDir: string | null = null;
 
@@ -19,6 +23,30 @@ function makeTempDir(): string {
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' });
+}
+
+function notebook(source: string[]): string {
+  return [
+    '{',
+    '  "cells": [',
+    '    {',
+    '      "cell_type": "code",',
+    '      "metadata": {"id": "cell-a"},',
+    '      "source": [',
+    ...source.map(
+      (line, index) => `        ${JSON.stringify(line)}${index === source.length - 1 ? '' : ','}`,
+    ),
+    '      ]',
+    '    }',
+    '  ],',
+    '  "nbformat": 4,',
+    '  "nbformat_minor": 5',
+    '}',
+  ].join('\n');
+}
+
+function compact(changes: RawLineChange[] | undefined) {
+  return (changes ?? []).map(({ line, type }) => ({ line, type }));
 }
 
 describe('gitProvider.gitStateFiles', () => {
@@ -91,3 +119,93 @@ describe('gitProvider.getGitVersions', () => {
     expect(versions.watchPaths?.packedRefs).toBe(path.join(repo, '.git', 'packed-refs'));
   });
 });
+
+describe('gitProvider.getGitNbdimeDiffs', () => {
+  it('returns staged and unstaged nbdime diffs separately', async () => {
+    const repo = makeTempDir();
+    git(repo, ['init']);
+    git(repo, ['config', 'user.name', 'JupyIndicator Test']);
+    git(repo, ['config', 'user.email', 'jupyindicator@example.com']);
+
+    const notebookPath = path.join(repo, 'notebook.ipynb');
+    fs.writeFileSync(notebookPath, notebook(['a\n', 'b\n', 'c']));
+    git(repo, ['add', 'notebook.ipynb']);
+    git(repo, ['commit', '-m', 'initial']);
+
+    fs.writeFileSync(notebookPath, notebook(['a\n', 'B\n', 'c']));
+    git(repo, ['add', 'notebook.ipynb']);
+    fs.writeFileSync(notebookPath, notebook(['a\n', 'B\n', 'C']));
+
+    const diffs = await getGitNbdimeDiffs(notebookPath, fakeNbdimeRunner);
+    const staged = computeNotebookChangesFromNbdimeDiff(diffs.staged, diffs.head, diffs.index);
+    const unstaged = computeNotebookChangesFromNbdimeDiff(
+      diffs.unstaged,
+      diffs.index,
+      diffs.working,
+    );
+    const total = computeNotebookChangesFromNbdimeDiff(diffs.total, diffs.head, diffs.working);
+
+    expect(compact(staged.get('cell-a'))).toEqual([{ line: 1, type: 'modified' }]);
+    expect(compact(unstaged.get('cell-a'))).toEqual([{ line: 2, type: 'modified' }]);
+    expect(compact(total.get('cell-a'))).toEqual([
+      { line: 1, type: 'modified' },
+      { line: 2, type: 'modified' },
+    ]);
+  });
+
+  it('uses an in-memory notebook buffer instead of saved disk content when provided', async () => {
+    const repo = makeTempDir();
+    git(repo, ['init']);
+    git(repo, ['config', 'user.name', 'JupyIndicator Test']);
+    git(repo, ['config', 'user.email', 'jupyindicator@example.com']);
+
+    const notebookPath = path.join(repo, 'notebook.ipynb');
+    fs.writeFileSync(notebookPath, notebook(['a\n', 'b\n', 'c']));
+    git(repo, ['add', 'notebook.ipynb']);
+    git(repo, ['commit', '-m', 'initial']);
+
+    fs.writeFileSync(notebookPath, notebook(['a\n', 'b\n', 'saved']));
+    const inMemory = notebook(['a\n', 'b\n', 'buffer']);
+
+    const diffs = await getGitNbdimeDiffs(notebookPath, fakeNbdimeRunner, inMemory);
+    const total = computeNotebookChangesFromNbdimeDiff(diffs.total, diffs.head, diffs.working);
+
+    expect(diffs.working).toBe(inMemory);
+    expect(compact(total.get('cell-a'))).toEqual([{ line: 2, type: 'modified' }]);
+  });
+});
+
+const fakeNbdimeRunner: NbdimeDiffRunner = async (baseRaw, remoteRaw) => {
+  const base = parseNotebook(baseRaw);
+  const remote = parseNotebook(remoteRaw);
+  if (base.cells.length === 0 && remote.cells.length > 0) {
+    return {
+      ok: true,
+      diff: [{
+        op: 'patch',
+        key: 'cells',
+        diff: [{ op: 'addrange', key: 0, valuelist: remote.cells }],
+      }],
+      error: null,
+    };
+  }
+
+  const cellDiff = [];
+  for (let i = 0; i < Math.max(base.cells.length, remote.cells.length); i++) {
+    const oldCell = base.cells[i];
+    const newCell = remote.cells[i];
+    if (oldCell && newCell && oldCell.source !== newCell.source) {
+      cellDiff.push({
+        op: 'patch',
+        key: i,
+        diff: [{ op: 'patch', key: 'source', diff: [{ op: 'patch', key: 0, diff: [] }] }],
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    diff: cellDiff.length > 0 ? [{ op: 'patch', key: 'cells', diff: cellDiff }] : [],
+    error: null,
+  };
+};

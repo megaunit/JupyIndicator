@@ -171,6 +171,45 @@ describe('cellDiffer: edit-then-Enter consistency', () => {
     ]);
   });
 
+  it('keeps matched old lines unmarked when suggestion acceptance adds nearby lines', () => {
+    const typedLine = diffCellSources('abc\ndef', 'abcx\ndef\ny');
+    expect(compact(typedLine)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 2, type: 'added', changeId: 0 },
+    ]);
+
+    const blankLine = diffCellSources('abc\ndef', 'abcx\ndef\n  ');
+    expect(compact(blankLine)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 2, type: 'added', changeId: 0 },
+    ]);
+  });
+
+  it('does not let a split segment consume a later unchanged old line', () => {
+    const r = diffCellSources(
+      "print(classification_report(y_test, y_pred))\n    'comp.graphics',",
+      "print(classification_report(y_test, y_pred))X\n    'comp.graphics',\nnew",
+    );
+
+    expect(compact(r)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 2, type: 'added', changeId: 0 },
+    ]);
+  });
+
+  it('keeps unchanged suffix lines unmarked after accepting a multi-line suggestion', () => {
+    const r = diffCellSources(
+      'foo\nbar\nbaz',
+      'fooCall()\narg1\narg2\nbar\nbaz',
+    );
+
+    expect(compact(r)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'added', changeId: 0 },
+      { line: 2, type: 'added', changeId: 0 },
+    ]);
+  });
+
   it('pressing Enter at the end of a no-trailing-newline last line is not a modification', () => {
     const r = diffCellSources('foo', 'foo\n');
     expect(compact(r)).toEqual([
@@ -238,6 +277,87 @@ describe('cellDiffer: edit-then-Enter consistency', () => {
     expect(compact(r)).toEqual([
       { line: 0, type: 'modified', changeId: 0 },
       { line: 1, type: 'modified', changeId: 0 },
+    ]);
+  });
+
+  it('marks adjacent split lines as modified when both old lines are split', () => {
+    const r = diffCellSources(
+      'alpha beta\ngamma delta',
+      'alpha\n beta\ngamma\n delta',
+    );
+
+    expect(compact(r)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'modified', changeId: 0 },
+      { line: 2, type: 'modified', changeId: 0 },
+      { line: 3, type: 'modified', changeId: 0 },
+    ]);
+    expect(changeCount(r)).toBe(1);
+  });
+
+  it('marks sequential auto-indented notebook list splits as modified', () => {
+    const oldSrc = [
+      'categories = [',
+      "    'talk.religion.misc',",
+      "    'comp.graphics',",
+      "    'sci.space',",
+      ']',
+    ].join('\n');
+    const newSrc = [
+      'categories = [',
+      "    'talk",
+      "    .religion.misc',",
+      "    'comp",
+      "    .graphics',",
+      "    'sci.space',",
+      ']',
+    ].join('\n');
+
+    expect(compact(diffCellSources(oldSrc, newSrc))).toEqual([
+      { line: 1, type: 'modified', changeId: 0 },
+      { line: 2, type: 'modified', changeId: 0 },
+      { line: 3, type: 'modified', changeId: 0 },
+      { line: 4, type: 'modified', changeId: 0 },
+    ]);
+  });
+
+  it('does not mark an unchanged blank separator when editing line 1 and splitting line 3', () => {
+    const r = diffCellSources(
+      'alpha beta\n\ngamma delta',
+      'alpha beta X\n\ngamma\n delta',
+    );
+
+    expect(compact(r)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 2, type: 'modified', changeId: 0 },
+      { line: 3, type: 'modified', changeId: 0 },
+    ]);
+  });
+
+  it('does not mark an unchanged blank separator when splitting line 1 and editing line 3', () => {
+    const r = diffCellSources(
+      'alpha beta\n\ngamma delta',
+      'alpha\n beta\n\ngamma delta X',
+    );
+
+    expect(compact(r)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'modified', changeId: 0 },
+      { line: 3, type: 'modified', changeId: 0 },
+    ]);
+  });
+
+  it('does not mark an unchanged blank separator when splitting both surrounding code lines', () => {
+    const r = diffCellSources(
+      'alpha beta\n\ngamma delta',
+      'alpha\n beta\n\ngamma\n delta',
+    );
+
+    expect(compact(r)).toEqual([
+      { line: 0, type: 'modified', changeId: 0 },
+      { line: 1, type: 'modified', changeId: 0 },
+      { line: 3, type: 'modified', changeId: 0 },
+      { line: 4, type: 'modified', changeId: 0 },
     ]);
   });
 
